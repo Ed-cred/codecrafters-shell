@@ -7,11 +7,13 @@ fn main() {
         let mut buf = String::new();
         match io::stdin().read_line(&mut buf) {
             Ok(_) => {
-                let command = buf.trim_end();
-                if command == "exit" {
-                    return;
+                let input = buf.trim_end();
+                let (command, rest) = input.split_once(' ').unwrap_or((input, ""));
+                match command {
+                    "exit" => return,
+                    "echo" => println!("{}", rest),
+                    _ => println!("{}: command not found", command),
                 }
-                println!("{}: command not found", command)
             }
             Err(e) => println!("error {e}"),
         }
