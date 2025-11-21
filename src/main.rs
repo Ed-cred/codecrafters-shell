@@ -16,7 +16,7 @@ fn main() {
                 if builtins.contains(&rest) {
                     println!("{rest} is a shell builtin");
                 } else {
-                    println!("{}: command not found", rest);
+                    println!("{}: not found", rest);
                 }
             }
             _ => println!("{}: command not found", command),
