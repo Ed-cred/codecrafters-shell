@@ -2,10 +2,12 @@ use std::env;
 use std::fs;
 use std::io::{self, Write};
 use std::path::PathBuf;
+use std::process;
 
+#[derive(Debug)]
 pub struct Shell {
     builtins: [&'static str; 3],
-    path_dirs: Vec<std::path::PathBuf>,
+    path_dirs: Vec<PathBuf>,
 }
 
 impl Shell {
@@ -36,10 +38,10 @@ impl Shell {
 
     fn handle_command(&mut self, cmd: Command) {
         match cmd.name {
-            "exit" => std::process::exit(0),
+            "exit" => process::exit(0),
             "echo" => println!("{}", cmd.args),
             "type" => self.handle_type(cmd.args),
-            _ => println!("{}: command not found", cmd.name),
+            _ => self.run_user_command(cmd),
         }
     }
 
@@ -65,8 +67,23 @@ impl Shell {
         }
         None
     }
+
+    fn run_user_command(&mut self, command: Command) {
+        match self.try_find_executable(command.name) {
+            Some(_) => {
+                if let Ok(output) = std::process::Command::new(command.name)
+                    .args(command.args.split_ascii_whitespace())
+                    .output()
+                {
+                    io::stdout().write_all(&output.stdout).unwrap();
+                }
+            }
+            None => println!("{}: command not found", command.name),
+        }
+    }
 }
 
+#[derive(Debug)]
 struct Command<'a> {
     name: &'a str,
     args: &'a str,
