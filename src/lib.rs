@@ -14,7 +14,6 @@ impl Shell {
         let path_dirs = env::var_os("PATH")
             .map(|paths| env::split_paths(&paths).collect())
             .unwrap_or_default();
-        dbg!(&path_dirs);
         Self {
             builtins,
             path_dirs,
