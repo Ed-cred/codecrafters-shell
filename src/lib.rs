@@ -56,13 +56,20 @@ impl Shell {
     fn try_find_executable<'a>(&mut self, name: &'a str) -> Option<PathBuf> {
         for dir in &self.path_dirs {
             let candidate_path = dir.join(name);
+            #[cfg(unix)]
             if let Ok(metadata) = fs::metadata(&candidate_path) {
-                if metadata.is_file() && !metadata.permissions().readonly() {
+                if metadata.is_file() && is_executable(&metadata) {
                     return Some(candidate_path);
                 }
             }
         }
         None
+    }
+
+    #[cfg(unix)]
+    fn is_executable(metadata: &fs::Metadata) {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode() & 0o111 != 0
     }
 }
 
