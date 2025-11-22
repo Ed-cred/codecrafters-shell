@@ -58,7 +58,7 @@ impl Shell {
             let candidate_path = dir.join(name);
             #[cfg(unix)]
             if let Ok(metadata) = fs::metadata(&candidate_path) {
-                if metadata.is_file() && is_executable(&metadata) {
+                if metadata.is_file() && self.is_executable(&metadata) {
                     return Some(candidate_path);
                 }
             }
@@ -67,7 +67,7 @@ impl Shell {
     }
 
     #[cfg(unix)]
-    fn is_executable(metadata: &fs::Metadata) {
+    fn is_executable(metadata: &fs::Metadata) -> bool {
         use std::os::unix::fs::PermissionsExt;
         metadata.permissions().mode() & 0o111 != 0
     }
