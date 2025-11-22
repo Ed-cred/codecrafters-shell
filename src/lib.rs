@@ -86,7 +86,13 @@ impl Shell {
     }
 
     fn handle_cd<'a>(&self, user_path: &'a str) {
-        if std::env::set_current_dir(Path::new(user_path)).is_err() {
+        let actual_path: PathBuf = if let Some(stripped_path) = user_path.strip_prefix("~") {
+            let home_path = std::env::var("HOME").expect("home should not be empty");
+            PathBuf::from(home_path).join(stripped_path)
+        } else {
+            PathBuf::from(user_path)
+        };
+        if std::env::set_current_dir(actual_path).is_err() {
             println!("cd: {user_path}: No such file or directory");
         }
     }
