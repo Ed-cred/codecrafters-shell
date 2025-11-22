@@ -1,6 +1,7 @@
 use std::env;
 use std::fs;
 use std::io::{self, Write};
+use std::path::Path;
 use std::path::PathBuf;
 use std::process;
 
@@ -12,7 +13,7 @@ pub struct Shell {
 
 impl Shell {
     pub fn new() -> Self {
-        let builtins = vec!["exit", "echo", "type", "pwd"];
+        let builtins = vec!["exit", "echo", "type", "pwd", "cd"];
         let path_dirs = env::var_os("PATH")
             .map(|paths| env::split_paths(&paths).collect())
             .unwrap_or_default();
@@ -42,6 +43,7 @@ impl Shell {
             "echo" => println!("{}", cmd.args),
             "type" => self.handle_type(cmd.args),
             "pwd" => println!("{}", std::env::current_dir().unwrap().display()),
+            "cd" => self.handle_cd(cmd.args),
             _ => self.run_user_command(cmd),
         }
     }
@@ -80,6 +82,12 @@ impl Shell {
                 }
             }
             None => println!("{}: command not found", command.name),
+        }
+    }
+
+    fn handle_cd<'a>(&self, user_path: &'a str) {
+        if std::env::set_current_dir(Path::new(user_path)).is_err() {
+            println!("cd: {user_path}: No such file or directory");
         }
     }
 }
