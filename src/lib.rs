@@ -6,13 +6,13 @@ use std::process;
 
 #[derive(Debug)]
 pub struct Shell {
-    builtins: [&'static str; 3],
+    builtins: Vec<&'static str>,
     path_dirs: Vec<PathBuf>,
 }
 
 impl Shell {
     pub fn new() -> Self {
-        let builtins = ["exit", "echo", "type"];
+        let builtins = vec!["exit", "echo", "type", "pwd"];
         let path_dirs = env::var_os("PATH")
             .map(|paths| env::split_paths(&paths).collect())
             .unwrap_or_default();
@@ -41,6 +41,7 @@ impl Shell {
             "exit" => process::exit(0),
             "echo" => println!("{}", cmd.args),
             "type" => self.handle_type(cmd.args),
+            "pwd" => println!("{}", std::env::current_dir().unwrap().display()),
             _ => self.run_user_command(cmd),
         }
     }
