@@ -1,4 +1,5 @@
 use std::env;
+use std::fmt::Display;
 use std::fs;
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -8,6 +9,31 @@ use std::process;
 pub struct Shell {
     builtins: Vec<&'static str>,
     path_dirs: Vec<PathBuf>,
+}
+
+#[derive(Debug)]
+pub enum ShellError {
+    Io(std::io::Error),
+    ShellMessage(String),
+    CommandNotFound(String),
+    NotFound(String),
+}
+
+impl Display for ShellError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ShellError::Io(error) => write!(f, "I/O error: {}", error),
+            ShellError::ShellMessage(s) => write!(f, "{}", s),
+            ShellError::CommandNotFound(cmd) => write!(f, "{}: command not found", cmd),
+            ShellError::NotFound(cmd) => write!(f, "{}: not found", cmd),
+        }
+    }
+}
+
+impl From<std::io::Error> for ShellError {
+    fn from(value: std::io::Error) -> Self {
+        ShellError::Io(value)
+    }
 }
 
 impl Shell {
@@ -32,7 +58,12 @@ impl Shell {
             let buf = buf.trim_end();
 
             let cmd = Command::parse(buf);
-            cmd.run(&mut self);
+            if let Err(err) = cmd.run(&mut self) {
+                match err {
+                    ShellError::CommandNotFound(_) | ShellError::NotFound(_) => println!("{}", err),
+                    other => eprintln!("{}", other),
+                }
+            }
         }
     }
 
@@ -51,7 +82,7 @@ impl Shell {
 }
 
 trait CommandExec {
-    fn run(self, shell: &mut Shell);
+    fn run(self, shell: &mut Shell) -> Result<(), ShellError>;
 }
 
 pub enum Command<'a> {
@@ -76,7 +107,7 @@ impl<'a> Command<'a> {
         }
     }
 
-    fn run(self, shell: &mut Shell) {
+    fn run(self, shell: &mut Shell) -> Result<(), ShellError> {
         match self {
             Command::Exit(exit_cmd) => exit_cmd.run(shell),
             Command::Echo(echo_cmd) => echo_cmd.run(shell),
@@ -90,7 +121,7 @@ impl<'a> Command<'a> {
 
 pub struct ExitCmd;
 impl CommandExec for ExitCmd {
-    fn run(self, _shell: &mut Shell) {
+    fn run(self, _shell: &mut Shell) -> Result<(), ShellError> {
         process::exit(0)
     }
 }
@@ -99,8 +130,9 @@ pub struct EchoCmd<'a> {
     args: &'a str,
 }
 impl CommandExec for EchoCmd<'_> {
-    fn run(self, _shell: &mut Shell) {
-        println!("{}", self.args)
+    fn run(self, _shell: &mut Shell) -> Result<(), ShellError> {
+        println!("{}", self.args);
+        Ok(())
     }
 }
 
@@ -108,21 +140,24 @@ pub struct TypeCmd<'a> {
     arg: &'a str,
 }
 impl CommandExec for TypeCmd<'_> {
-    fn run(self, shell: &mut Shell) {
+    fn run(self, shell: &mut Shell) -> Result<(), ShellError> {
         if shell.builtins.contains(&self.arg) {
             println!("{} is a shell builtin", self.arg);
+            return Ok(());
         } else if let Some(executable_path) = shell.try_find_executable(self.arg) {
             println!("{} is {}", self.arg, executable_path.display());
-        } else {
-            println!("{}: not found", self.arg);
+            return Ok(());
         }
+        return Err(ShellError::NotFound(self.arg.into()));
     }
 }
 
 pub struct PwdCmd;
 impl CommandExec for PwdCmd {
-    fn run(self, _shell: &mut Shell) {
-        println!("{}", std::env::current_dir().unwrap().display())
+    fn run(self, _shell: &mut Shell) -> Result<(), ShellError> {
+        let cwd = std::env::current_dir()?;
+        println!("{}", cwd.display());
+        Ok(())
     }
 }
 
@@ -130,7 +165,7 @@ pub struct CdCmd<'a> {
     path: &'a str,
 }
 impl CommandExec for CdCmd<'_> {
-    fn run(self, _shell: &mut Shell) {
+    fn run(self, _shell: &mut Shell) -> Result<(), ShellError> {
         let actual_path: PathBuf = if let Some(stripped_path) = self.path.strip_prefix("~") {
             let home_path = std::env::var("HOME").expect("home should not be empty");
             PathBuf::from(home_path).join(stripped_path)
@@ -138,8 +173,12 @@ impl CommandExec for CdCmd<'_> {
             PathBuf::from(self.path)
         };
         if std::env::set_current_dir(actual_path).is_err() {
-            println!("cd: {}: No such file or directory", self.path);
+            return Err(ShellError::ShellMessage(format!(
+                "cd: {}: No such file or directory",
+                self.path
+            )));
         }
+        Ok(())
     }
 }
 
@@ -148,17 +187,16 @@ pub struct ExternalCmd<'a> {
     args: &'a str,
 }
 impl CommandExec for ExternalCmd<'_> {
-    fn run(self, shell: &mut Shell) {
+    fn run(self, shell: &mut Shell) -> Result<(), ShellError> {
         match shell.try_find_executable(self.name) {
             Some(_) => {
-                if let Ok(output) = std::process::Command::new(self.name)
+                let output = std::process::Command::new(self.name)
                     .args(self.args.split_ascii_whitespace())
-                    .output()
-                {
-                    io::stdout().write_all(&output.stdout).unwrap();
-                }
+                    .output()?;
+                io::stdout().write_all(&output.stdout)?;
+                Ok(())
             }
-            None => println!("{}: command not found", self.name),
+            None => return Err(ShellError::NotFound(self.name.into())),
         }
     }
 }
