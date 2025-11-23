@@ -85,7 +85,7 @@ trait CommandExec {
     fn run(self, shell: &mut Shell) -> Result<(), ShellError>;
 }
 
-pub enum Command<'a> {
+enum Command<'a> {
     Exit(ExitCmd),
     Echo(EchoCmd<'a>),
     Pwd(PwdCmd),
@@ -119,14 +119,14 @@ impl<'a> Command<'a> {
     }
 }
 
-pub struct ExitCmd;
+struct ExitCmd;
 impl CommandExec for ExitCmd {
     fn run(self, _shell: &mut Shell) -> Result<(), ShellError> {
         process::exit(0)
     }
 }
 
-pub struct EchoCmd<'a> {
+struct EchoCmd<'a> {
     args: &'a str,
 }
 impl CommandExec for EchoCmd<'_> {
@@ -136,7 +136,7 @@ impl CommandExec for EchoCmd<'_> {
     }
 }
 
-pub struct TypeCmd<'a> {
+struct TypeCmd<'a> {
     arg: &'a str,
 }
 impl CommandExec for TypeCmd<'_> {
@@ -152,7 +152,7 @@ impl CommandExec for TypeCmd<'_> {
     }
 }
 
-pub struct PwdCmd;
+struct PwdCmd;
 impl CommandExec for PwdCmd {
     fn run(self, _shell: &mut Shell) -> Result<(), ShellError> {
         let cwd = std::env::current_dir()?;
@@ -161,7 +161,7 @@ impl CommandExec for PwdCmd {
     }
 }
 
-pub struct CdCmd<'a> {
+struct CdCmd<'a> {
     path: &'a str,
 }
 impl CommandExec for CdCmd<'_> {
@@ -182,7 +182,7 @@ impl CommandExec for CdCmd<'_> {
     }
 }
 
-pub struct ExternalCmd<'a> {
+struct ExternalCmd<'a> {
     name: &'a str,
     args: &'a str,
 }
