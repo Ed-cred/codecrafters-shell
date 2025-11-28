@@ -137,6 +137,7 @@ fn parse_args(input: &str) -> Vec<String> {
     enum State {
         Normal,
         SingleQuotes,
+        DoubleQuotes,
     }
     let mut state = State::Normal;
 
@@ -147,7 +148,10 @@ fn parse_args(input: &str) -> Vec<String> {
             (State::Normal, '\'') => {
                 state = State::SingleQuotes;
             }
-            (State::SingleQuotes, '\'') => {
+            (State::Normal, '\"') => {
+                state = State::DoubleQuotes;
+            }
+            (State::SingleQuotes, '\'') | (State::DoubleQuotes, '\"') => {
                 state = State::Normal;
             }
             (State::Normal, c) if c.is_whitespace() => {
