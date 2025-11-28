@@ -87,23 +87,33 @@ trait CommandExec {
 
 enum Command<'a> {
     Exit(ExitCmd),
-    Echo(EchoCmd<'a>),
+    Echo(EchoCmd),
     Pwd(PwdCmd),
-    Cd(CdCmd<'a>),
-    Type(TypeCmd<'a>),
+    Cd(CdCmd),
+    Type(TypeCmd),
     External(ExternalCmd<'a>),
 }
 
 impl<'a> Command<'a> {
     fn parse(input: &'a str) -> Self {
         let (name, args) = input.split_once(' ').unwrap_or((input, ""));
+        let parsed_args = parse_args(args);
         match name {
             "exit" => Command::Exit(ExitCmd),
-            "echo" => Command::Echo(EchoCmd { args }),
-            "type" => Command::Type(TypeCmd { arg: args }),
+            "echo" => Command::Echo(EchoCmd {
+                args: parsed_args.join(" "),
+            }),
+            "type" => Command::Type(TypeCmd {
+                arg: parsed_args.join(" "),
+            }),
             "pwd" => Command::Pwd(PwdCmd),
-            "cd" => Command::Cd(CdCmd { path: args }),
-            other => Command::External(ExternalCmd { name: other, args }),
+            "cd" => Command::Cd(CdCmd {
+                path: parsed_args.join(" "),
+            }),
+            other => Command::External(ExternalCmd {
+                name: other,
+                args: parsed_args,
+            }),
         }
     }
 
@@ -119,6 +129,44 @@ impl<'a> Command<'a> {
     }
 }
 
+fn parse_args(input: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut current_str = String::new();
+
+    #[derive(Copy, Clone)]
+    enum State {
+        Normal,
+        SingleQuotes,
+    }
+    let mut state = State::Normal;
+
+    for c in input.chars() {
+        // Matching like this needs to clone state, but that's trivial since
+        // it has no payload (basically just cloning an integer so very cheap)
+        match (state, c) {
+            (State::Normal, '\'') => {
+                state = State::SingleQuotes;
+            }
+            (State::SingleQuotes, '\'') => {
+                state = State::Normal;
+            }
+            (State::Normal, c) if c.is_whitespace() => {
+                if !current_str.is_empty() {
+                    // no clone here, and take resets the string back to Default
+                    parts.push(std::mem::take(&mut current_str));
+                }
+            }
+            (_, c) => {
+                current_str.push(c);
+            }
+        }
+    }
+    if !current_str.is_empty() {
+        parts.push(current_str);
+    }
+    parts
+}
+
 struct ExitCmd;
 impl CommandExec for ExitCmd {
     fn run(self, _shell: &mut Shell) -> Result<(), ShellError> {
@@ -126,25 +174,25 @@ impl CommandExec for ExitCmd {
     }
 }
 
-struct EchoCmd<'a> {
-    args: &'a str,
+struct EchoCmd {
+    args: String,
 }
-impl CommandExec for EchoCmd<'_> {
+impl CommandExec for EchoCmd {
     fn run(self, _shell: &mut Shell) -> Result<(), ShellError> {
         println!("{}", self.args);
         Ok(())
     }
 }
 
-struct TypeCmd<'a> {
-    arg: &'a str,
+struct TypeCmd {
+    arg: String,
 }
-impl CommandExec for TypeCmd<'_> {
+impl CommandExec for TypeCmd {
     fn run(self, shell: &mut Shell) -> Result<(), ShellError> {
-        if shell.builtins.contains(&self.arg) {
+        if shell.builtins.iter().any(|builtin| builtin == &self.arg) {
             println!("{} is a shell builtin", self.arg);
             return Ok(());
-        } else if let Some(executable_path) = shell.try_find_executable(self.arg) {
+        } else if let Some(executable_path) = shell.try_find_executable(&self.arg) {
             println!("{} is {}", self.arg, executable_path.display());
             return Ok(());
         }
@@ -161,16 +209,16 @@ impl CommandExec for PwdCmd {
     }
 }
 
-struct CdCmd<'a> {
-    path: &'a str,
+struct CdCmd {
+    path: String,
 }
-impl CommandExec for CdCmd<'_> {
+impl CommandExec for CdCmd {
     fn run(self, _shell: &mut Shell) -> Result<(), ShellError> {
         let actual_path: PathBuf = if let Some(stripped_path) = self.path.strip_prefix("~") {
             let home_path = std::env::var("HOME").expect("home should not be empty");
             PathBuf::from(home_path).join(stripped_path)
         } else {
-            PathBuf::from(self.path)
+            PathBuf::from(&self.path)
         };
         if std::env::set_current_dir(actual_path).is_err() {
             return Err(ShellError::ShellMessage(format!(
@@ -184,14 +232,14 @@ impl CommandExec for CdCmd<'_> {
 
 struct ExternalCmd<'a> {
     name: &'a str,
-    args: &'a str,
+    args: Vec<String>,
 }
 impl CommandExec for ExternalCmd<'_> {
     fn run(self, shell: &mut Shell) -> Result<(), ShellError> {
         match shell.try_find_executable(self.name) {
             Some(_) => {
                 let output = std::process::Command::new(self.name)
-                    .args(self.args.split_ascii_whitespace())
+                    .args(self.args)
                     .output()?;
                 io::stdout().write_all(&output.stdout)?;
                 Ok(())
