@@ -142,32 +142,35 @@ enum Action {
     Flush,
     SetQuote(Quote),
     StartEscape,
-    EscapedPush(char),
+    Consume(char),
 }
 
 fn step(quote: Quote, escaped: bool, c: char) -> Action {
-    if quote == Quote::None {
-        if escaped {
-            return Action::EscapedPush(c);
-        }
-        match c {
+    if escaped {
+        return Action::Consume(c);
+    }
+    match quote {
+        Quote::None => match c {
             '\\' => Action::StartEscape,
             '\'' => Action::SetQuote(Quote::Single),
             '\"' => Action::SetQuote(Quote::Double),
             c if c.is_whitespace() => Action::Flush,
             _ => Action::Push(c),
-        }
-    } else {
-        match (quote, c) {
-            (Quote::Single, '\'') => Action::SetQuote(Quote::None),
-            (Quote::Double, '\"') => Action::SetQuote(Quote::None),
+        },
+        Quote::Single => match c {
+            '\'' => Action::SetQuote(Quote::None),
             _ => Action::Push(c),
-        }
+        },
+        Quote::Double => match c {
+            '\"' => Action::SetQuote(Quote::None),
+            '\\' => Action::StartEscape,
+            _ => Action::Push(c),
+        },
     }
 }
 
 fn parse_args(input: &str) -> Vec<String> {
-    let mut parts = Vec::new();
+    let mut out_str = Vec::new();
     let mut current_str = String::new();
 
     let mut quote = Quote::None;
@@ -175,28 +178,43 @@ fn parse_args(input: &str) -> Vec<String> {
 
     for c in input.chars() {
         match step(quote, escaped, c) {
-            Action::Push(c) => current_str.push(c),
+            Action::Push(ch) => current_str.push(ch),
             Action::Flush => {
                 if !current_str.is_empty() {
                     // no clone here, and take resets the string back to Default
-                    parts.push(std::mem::take(&mut current_str));
+                    out_str.push(std::mem::take(&mut current_str));
                 }
             }
             Action::SetQuote(q) => quote = q,
             Action::StartEscape => escaped = true,
-            Action::EscapedPush(_) => {
-                current_str.push(c);
+            Action::Consume(ch) => {
+                match quote {
+                    Quote::None => {
+                        current_str.push(ch);
+                    }
+                    Quote::Single => {
+                        current_str.push('\\');
+                        current_str.push(ch);
+                    }
+                    Quote::Double => match ch {
+                        '"' | '\\' => current_str.push(ch),
+                        _ => {
+                            current_str.push('\\');
+                            current_str.push(ch);
+                        }
+                    },
+                }
                 escaped = false;
             }
         }
     }
-    if quote == Quote::None && escaped {
+    if escaped {
         current_str.push('\\');
     }
     if !current_str.is_empty() {
-        parts.push(current_str);
+        out_str.push(current_str);
     }
-    return parts;
+    return out_str;
 }
 
 struct ExitCmd;
