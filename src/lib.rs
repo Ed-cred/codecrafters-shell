@@ -192,10 +192,7 @@ fn parse_args(input: &str) -> Vec<String> {
                     Quote::None => {
                         current_str.push(ch);
                     }
-                    Quote::Single => {
-                        current_str.push('\\');
-                        current_str.push(ch);
-                    }
+                    Quote::Single => unreachable!("backslash does not escape inside single quotes"),
                     Quote::Double => match ch {
                         '"' | '\\' => current_str.push(ch),
                         _ => {
