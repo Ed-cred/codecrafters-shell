@@ -129,46 +129,74 @@ impl<'a> Command<'a> {
     }
 }
 
+#[derive(Copy, Clone, Eq, PartialEq)]
+enum Quote {
+    None,
+    Single,
+    Double,
+}
+
+#[derive(Copy, Clone, Eq, PartialEq)]
+enum Action {
+    Push(char),
+    Flush,
+    SetQuote(Quote),
+    StartEscape,
+    EscapedPush(char),
+}
+
+fn step(quote: Quote, escaped: bool, c: char) -> Action {
+    if quote == Quote::None {
+        if escaped {
+            return Action::EscapedPush(c);
+        }
+        match c {
+            '\\' => Action::StartEscape,
+            '\'' => Action::SetQuote(Quote::Single),
+            '\"' => Action::SetQuote(Quote::Double),
+            c if c.is_whitespace() => Action::Flush,
+            _ => Action::Push(c),
+        }
+    } else {
+        match (quote, c) {
+            (Quote::Single, '\'') => Action::SetQuote(Quote::None),
+            (Quote::Double, '\"') => Action::SetQuote(Quote::None),
+            _ => Action::Push(c),
+        }
+    }
+}
+
 fn parse_args(input: &str) -> Vec<String> {
     let mut parts = Vec::new();
     let mut current_str = String::new();
 
-    #[derive(Copy, Clone)]
-    enum State {
-        Normal,
-        SingleQuotes,
-        DoubleQuotes,
-    }
-    let mut state = State::Normal;
+    let mut quote = Quote::None;
+    let mut escaped = false;
 
     for c in input.chars() {
-        // Matching like this needs to clone state, but that's trivial since
-        // it has no payload (basically just cloning an integer so very cheap)
-        match (state, c) {
-            (State::Normal, '\'') => {
-                state = State::SingleQuotes;
-            }
-            (State::Normal, '\"') => {
-                state = State::DoubleQuotes;
-            }
-            (State::SingleQuotes, '\'') | (State::DoubleQuotes, '\"') => {
-                state = State::Normal;
-            }
-            (State::Normal, c) if c.is_whitespace() => {
+        match step(quote, escaped, c) {
+            Action::Push(c) => current_str.push(c),
+            Action::Flush => {
                 if !current_str.is_empty() {
                     // no clone here, and take resets the string back to Default
                     parts.push(std::mem::take(&mut current_str));
                 }
             }
-            (_, c) => {
+            Action::SetQuote(q) => quote = q,
+            Action::StartEscape => escaped = true,
+            Action::EscapedPush(_) => {
                 current_str.push(c);
+                escaped = false;
             }
         }
+    }
+    if quote == Quote::None && escaped {
+        current_str.push('\\');
     }
     if !current_str.is_empty() {
         parts.push(current_str);
     }
-    parts
+    return parts;
 }
 
 struct ExitCmd;
