@@ -85,34 +85,38 @@ trait CommandExec {
     fn run(self, shell: &mut Shell) -> Result<(), ShellError>;
 }
 
-enum Command<'a> {
+enum Command {
     Exit(ExitCmd),
     Echo(EchoCmd),
     Pwd(PwdCmd),
     Cd(CdCmd),
     Type(TypeCmd),
-    External(ExternalCmd<'a>),
+    External(ExternalCmd),
 }
 
-impl<'a> Command<'a> {
-    fn parse(input: &'a str) -> Self {
-        let (name, args) = input.split_once(' ').unwrap_or((input, ""));
-        let parsed_args = parse_args(args);
-        match name {
+impl Command {
+    fn parse(input: &str) -> Self {
+        let tokens = tokenize(input);
+        let (name, args) = match tokens.split_first() {
+            Some((n, rest)) => (n.clone(), rest.to_vec()),
+            None => (String::new(), Vec::new()),
+        };
+
+        match name.as_str() {
             "exit" => Command::Exit(ExitCmd),
             "echo" => Command::Echo(EchoCmd {
-                args: parsed_args.join(" "),
+                args: args.join(" "),
             }),
             "type" => Command::Type(TypeCmd {
-                arg: parsed_args.join(" "),
+                arg: args.join(" "),
             }),
             "pwd" => Command::Pwd(PwdCmd),
             "cd" => Command::Cd(CdCmd {
-                path: parsed_args.join(" "),
+                path: args.join(" "),
             }),
             other => Command::External(ExternalCmd {
-                name: other,
-                args: parsed_args,
+                name: other.to_string(),
+                args: args,
             }),
         }
     }
@@ -169,7 +173,7 @@ fn step(quote: Quote, escaped: bool, c: char) -> Action {
     }
 }
 
-fn parse_args(input: &str) -> Vec<String> {
+fn tokenize(input: &str) -> Vec<String> {
     let mut out_str = Vec::new();
     let mut current_str = String::new();
 
@@ -277,13 +281,13 @@ impl CommandExec for CdCmd {
     }
 }
 
-struct ExternalCmd<'a> {
-    name: &'a str,
+struct ExternalCmd {
+    name: String,
     args: Vec<String>,
 }
-impl CommandExec for ExternalCmd<'_> {
+impl CommandExec for ExternalCmd {
     fn run(self, shell: &mut Shell) -> Result<(), ShellError> {
-        match shell.try_find_executable(self.name) {
+        match shell.try_find_executable(self.name.as_str()) {
             Some(_) => {
                 let output = std::process::Command::new(self.name)
                     .args(self.args)
