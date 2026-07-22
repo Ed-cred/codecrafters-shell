@@ -82,14 +82,16 @@ impl Shell {
             };
             let cmd = Command::parse(buf).unwrap();
             let res = if let Some(builtin) = find_builtin(cmd.name()) {
-                builtin(&mut ctx, cmd.argv.as_slice())
+                builtin(&mut ctx, cmd.args())
             } else {
                 external_cmd(&mut ctx, cmd.argv.as_slice())
             };
             if let Err(err) = res {
                 match err {
-                    ShellError::CommandNotFound(_) | ShellError::NotFound(_) => println!("{}", err),
-                    other => eprintln!("{}", other),
+                    ShellError::CommandNotFound(_) | ShellError::NotFound(_) => {
+                        writeln!(ctx.stdout, "{}", err).unwrap();
+                    }
+                    other => writeln!(ctx.stderr, "{}", other).unwrap(),
                 }
             }
         }
@@ -213,58 +215,27 @@ fn tokenize(input: &str) -> Vec<String> {
     return out_str;
 }
 
-/* struct ExitCmd;
-impl CommandExec for ExitCmd {
-    fn run(self, _shell: &mut Shell) -> Result<(), ShellError> {
-        process::exit(0)
-    }
-} */
 fn exit_cmd(_ctx: &mut ExecutionContext<'_>, args: &[String]) -> Result<(), ShellError> {
-    if args.len() > 1 {
+    if args.len() != 0 {
         return Err(ShellError::ShellMessage(
             "exit: expected exactly zero arguments".to_string(),
         ));
     }
     process::exit(0)
 }
-/* struct EchoCmd {
-    args: String,
-}
-impl CommandExec for EchoCmd {
-    fn run(self, _shell: &mut Shell) -> Result<(), ShellError> {
-        println!("{}", self.args);
-        Ok(())
-    }
-} */
 
 fn echo_cmd(ctx: &mut ExecutionContext<'_>, args: &[String]) -> Result<(), ShellError> {
-    writeln!(ctx.stdout, "{}", args[1..].join(" "))?;
+    writeln!(ctx.stdout, "{}", args.join(" "))?;
     Ok(())
 }
 
-/* struct TypeCmd {
-    arg: String,
-}
-impl CommandExec for TypeCmd {
-    fn run(self, shell: &mut Shell) -> Result<(), ShellError> {
-        if shell.builtins.iter().any(|builtin| builtin == &self.arg) {
-            println!("{} is a shell builtin", self.arg);
-            return Ok(());
-        } else if let Some(executable_path) = shell.try_find_executable(&self.arg) {
-            println!("{} is {}", self.arg, executable_path.display());
-            return Ok(());
-        }
-        return Err(ShellError::NotFound(self.arg.into()));
-    }
-} */
-
 fn type_cmd(ctx: &mut ExecutionContext<'_>, args: &[String]) -> Result<(), ShellError> {
-    if args.len() != 2 {
+    if args.len() != 1 {
         return Err(ShellError::ShellMessage(
             "type: expected exactly one argument".to_string(),
         ));
     }
-    let cmd_name = &args[1];
+    let cmd_name = &args[0];
     if let Some(_builtin) = find_builtin(cmd_name) {
         writeln!(ctx.stdout, "{} is a shell builtin", cmd_name)?;
         Ok(())
@@ -276,17 +247,8 @@ fn type_cmd(ctx: &mut ExecutionContext<'_>, args: &[String]) -> Result<(), Shell
     }
 }
 
-/* struct PwdCmd;
-impl CommandExec for PwdCmd {
-    fn run(self, _shell: &mut Shell) -> Result<(), ShellError> {
-        let cwd = std::env::current_dir()?;
-        println!("{}", cwd.display());
-        Ok(())
-    }
-} */
-
 fn pwd_cmd(ctx: &mut ExecutionContext<'_>, args: &[String]) -> Result<(), ShellError> {
-    if args.len() > 1 {
+    if args.len() != 0 {
         return Err(ShellError::ShellMessage(
             "pwd: expected exactly zero arguments".to_string(),
         ));
@@ -296,34 +258,13 @@ fn pwd_cmd(ctx: &mut ExecutionContext<'_>, args: &[String]) -> Result<(), ShellE
     Ok(())
 }
 
-/* struct CdCmd {
-    path: String,
-}
-impl CommandExec for CdCmd {
-    fn run(self, _shell: &mut Shell) -> Result<(), ShellError> {
-        let actual_path: PathBuf = if let Some(stripped_path) = self.path.strip_prefix("~") {
-            let home_path = std::env::var("HOME").expect("home should not be empty");
-            PathBuf::from(home_path).join(stripped_path)
-        } else {
-            PathBuf::from(&self.path)
-        };
-        if std::env::set_current_dir(actual_path).is_err() {
-            return Err(ShellError::ShellMessage(format!(
-                "cd: {}: No such file or directory",
-                self.path
-            )));
-        }
-        Ok(())
-    }
-} */
-
 fn cd_cmd(_ctx: &mut ExecutionContext<'_>, args: &[String]) -> Result<(), ShellError> {
-    if args.len() != 2 {
+    if args.len() != 1 {
         return Err(ShellError::ShellMessage(
             "cd: expected exactly one argument".to_string(),
         ));
     }
-    let path_dir = &args[1];
+    let path_dir = &args[0];
     let actual_path: PathBuf = if let Some(stripped_path) = path_dir.strip_prefix("~") {
         let home_path = std::env::var("HOME").expect("home should not be empty");
         PathBuf::from(home_path).join(stripped_path)
@@ -339,26 +280,8 @@ fn cd_cmd(_ctx: &mut ExecutionContext<'_>, args: &[String]) -> Result<(), ShellE
     Ok(())
 }
 
-/* struct ExternalCmd<'a> {
-    name: &'a str,
-    args: Vec<String>,
-}
-impl CommandExec for ExternalCmd<'_> {
-    fn run(self, shell: &mut Shell) -> Result<(), ShellError> {
-        match shell.try_find_executable(self.name) {
-            Some(_) => {
-                let output = std::process::Command::new(self.name)
-                    .args(self.args)
-                    .output()?;
-                io::stdout().write_all(&output.stdout)?;
-                Ok(())
-            }
-            None => return Err(ShellError::NotFound(self.name.into())),
-        }
-    }
-} */
-fn external_cmd(ctx: &mut ExecutionContext<'_>, args: &[String]) -> Result<(), ShellError> {
-    let (name, program_args) = args
+fn external_cmd(ctx: &mut ExecutionContext<'_>, argv: &[String]) -> Result<(), ShellError> {
+    let (name, program_args) = argv
         .split_first()
         .ok_or_else(|| ShellError::ShellMessage("missing command".to_string()))?;
     match ctx.shell.try_find_executable(name) {
