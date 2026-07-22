@@ -114,7 +114,7 @@ struct Command {
 
 impl Command {
     fn parse(input: &str) -> Option<Self> {
-        let argv = parse_args(input);
+        let argv = tokenize(input);
 
         Some(Self { argv })
     }
@@ -128,46 +128,89 @@ impl Command {
     }
 }
 
-fn parse_args(input: &str) -> Vec<String> {
-    let mut parts = Vec::new();
+#[derive(Copy, Clone, Eq, PartialEq)]
+enum Quote {
+    None,
+    Single,
+    Double,
+}
+
+#[derive(Copy, Clone, Eq, PartialEq)]
+enum Action {
+    Push(char),
+    Flush,
+    SetQuote(Quote),
+    StartEscape,
+    Consume(char),
+}
+
+fn step(quote: Quote, escaped: bool, c: char) -> Action {
+    if escaped {
+        return Action::Consume(c);
+    }
+    match quote {
+        Quote::None => match c {
+            '\\' => Action::StartEscape,
+            '\'' => Action::SetQuote(Quote::Single),
+            '\"' => Action::SetQuote(Quote::Double),
+            c if c.is_whitespace() => Action::Flush,
+            _ => Action::Push(c),
+        },
+        Quote::Single => match c {
+            '\'' => Action::SetQuote(Quote::None),
+            _ => Action::Push(c),
+        },
+        Quote::Double => match c {
+            '\"' => Action::SetQuote(Quote::None),
+            '\\' => Action::StartEscape,
+            _ => Action::Push(c),
+        },
+    }
+}
+
+fn tokenize(input: &str) -> Vec<String> {
+    let mut out_str = Vec::new();
     let mut current_str = String::new();
 
-    #[derive(Copy, Clone)]
-    enum State {
-        Normal,
-        SingleQuotes,
-        DoubleQuotes,
-    }
-    let mut state = State::Normal;
+    let mut quote = Quote::None;
+    let mut escaped = false;
 
     for c in input.chars() {
-        // Matching like this needs to clone state, but that's trivial since
-        // it has no payload (basically just cloning an integer so very cheap)
-        match (state, c) {
-            (State::Normal, '\'') => {
-                state = State::SingleQuotes;
-            }
-            (State::Normal, '\"') => {
-                state = State::DoubleQuotes;
-            }
-            (State::SingleQuotes, '\'') | (State::DoubleQuotes, '\"') => {
-                state = State::Normal;
-            }
-            (State::Normal, c) if c.is_whitespace() => {
+        match step(quote, escaped, c) {
+            Action::Push(ch) => current_str.push(ch),
+            Action::Flush => {
                 if !current_str.is_empty() {
                     // no clone here, and take resets the string back to Default
-                    parts.push(std::mem::take(&mut current_str));
+                    out_str.push(std::mem::take(&mut current_str));
                 }
             }
-            (_, c) => {
-                current_str.push(c);
+            Action::SetQuote(q) => quote = q,
+            Action::StartEscape => escaped = true,
+            Action::Consume(ch) => {
+                match quote {
+                    Quote::None => {
+                        current_str.push(ch);
+                    }
+                    Quote::Single => unreachable!("backslash does not escape inside single quotes"),
+                    Quote::Double => match ch {
+                        '"' | '\\' => current_str.push(ch),
+                        _ => {
+                            current_str.push('\\');
+                            current_str.push(ch);
+                        }
+                    },
+                }
+                escaped = false;
             }
         }
     }
-    if !current_str.is_empty() {
-        parts.push(current_str);
+    if escaped {
+        current_str.push('\\');
     }
-    parts
+    if !current_str.is_empty() {
+        out_str.push(current_str);
+    }
+    return out_str;
 }
 
 /* struct ExitCmd;
