@@ -73,6 +73,7 @@ impl Shell {
             let mut buf = String::new();
             let _ = io::stdin().read_line(&mut buf).unwrap();
             let buf = buf.trim_end();
+
             let mut ctx = ExecutionContext {
                 shell: &mut self,
                 stdin: &mut io::stdin(),
@@ -180,7 +181,6 @@ fn tokenize(input: &str) -> Vec<String> {
             Action::Push(ch) => current_str.push(ch),
             Action::Flush => {
                 if !current_str.is_empty() {
-                    // no clone here, and take resets the string back to Default
                     out_str.push(std::mem::take(&mut current_str));
                 }
             }
@@ -238,7 +238,7 @@ impl CommandExec for EchoCmd {
 } */
 
 fn echo_cmd(ctx: &mut ExecutionContext<'_>, args: &[String]) -> Result<(), ShellError> {
-    writeln!(ctx.stdout, "{}", args.join(" "))?;
+    writeln!(ctx.stdout, "{}", args[1..].join(" "))?;
     Ok(())
 }
 
@@ -264,13 +264,16 @@ fn type_cmd(ctx: &mut ExecutionContext<'_>, args: &[String]) -> Result<(), Shell
             "type: expected exactly one argument".to_string(),
         ));
     }
-    let cmd_name = &args[0];
+    let cmd_name = &args[1];
     if let Some(_builtin) = find_builtin(cmd_name) {
         writeln!(ctx.stdout, "{} is a shell builtin", cmd_name)?;
+        Ok(())
     } else if let Some(executable_path) = ctx.shell.try_find_executable(cmd_name) {
         writeln!(ctx.stdout, "{} is {}", cmd_name, executable_path.display())?;
+        Ok(())
+    } else {
+        return Err(ShellError::NotFound(cmd_name.into()));
     }
-    return Err(ShellError::NotFound(cmd_name.into()));
 }
 
 /* struct PwdCmd;
@@ -315,12 +318,12 @@ impl CommandExec for CdCmd {
 } */
 
 fn cd_cmd(_ctx: &mut ExecutionContext<'_>, args: &[String]) -> Result<(), ShellError> {
-    if args.len() != 1 {
+    if args.len() != 2 {
         return Err(ShellError::ShellMessage(
             "cd: expected exactly one argument".to_string(),
         ));
     }
-    let path_dir = &args[0];
+    let path_dir = &args[1];
     let actual_path: PathBuf = if let Some(stripped_path) = path_dir.strip_prefix("~") {
         let home_path = std::env::var("HOME").expect("home should not be empty");
         PathBuf::from(home_path).join(stripped_path)
