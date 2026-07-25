@@ -1,41 +1,28 @@
 use std::env;
 use std::fmt::Display;
 use std::fs::{self, File};
-use std::io::{self, Read, Write};
-use std::os::fd::FromRawFd;
+use std::io::{self, Error, Write};
 use std::path::PathBuf;
-use std::process::{self, Stdio};
+
+use crate::builtins::{external_cmd, find_builtin, BuiltinFn};
+use crate::parser::{Command, ParseError};
+
+mod builtins;
+mod parser;
 
 #[derive(Debug)]
 pub struct Shell {
     path_dirs: Vec<PathBuf>,
 }
 
-type BuiltinFn = fn(&mut ExecutionContext<'_>, &Command) -> Result<(), ShellError>;
-static BUILTINS: &[(&str, BuiltinFn)] = &[
-    ("exit", exit_cmd as BuiltinFn),
-    ("echo", echo_cmd as BuiltinFn),
-    ("type", type_cmd as BuiltinFn),
-    ("pwd", pwd_cmd as BuiltinFn),
-    ("cd", cd_cmd as BuiltinFn),
-];
-
-fn find_builtin(name: &str) -> Option<BuiltinFn> {
-    BUILTINS
-        .iter()
-        .find_map(|&(builtin_name, func)| (builtin_name == name).then_some(func))
-}
-
-struct ExecutionContext<'a> {
-    shell: &'a mut Shell,
-    stdin: &'a mut dyn Read,
+struct OutputStreams<'a> {
     stdout: &'a mut dyn Write,
     stderr: &'a mut dyn Write,
 }
 
 #[derive(Debug)]
 pub enum ShellError {
-    Io(std::io::Error),
+    Io(Error),
     ShellMessage(String),
     CommandNotFound(String),
     NotFound(String),
@@ -54,9 +41,20 @@ impl Display for ShellError {
     }
 }
 
-impl From<std::io::Error> for ShellError {
-    fn from(value: std::io::Error) -> Self {
+impl std::error::Error for ShellError {}
+
+impl From<Error> for ShellError {
+    fn from(value: Error) -> Self {
         ShellError::Io(value)
+    }
+}
+
+impl ShellError {
+    pub fn is_stdout_err(&self) -> bool {
+        matches!(
+            self,
+            ShellError::CommandNotFound(_) | ShellError::NotFound(_)
+        )
     }
 }
 
@@ -68,7 +66,7 @@ impl Shell {
         Self { path_dirs }
     }
 
-    pub fn run(mut self) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn run(&self) -> Result<(), Box<dyn std::error::Error>> {
         loop {
             print!("$ ");
             io::stdout().flush().unwrap();
@@ -86,12 +84,18 @@ impl Shell {
             let cmd = match Command::parse(buf) {
                 Ok(command) => command,
                 Err(err) => {
-                    writeln!(io::stderr(), "{}", err);
+                    report(&err.into(), &mut io::stdout(), &mut io::stderr())?;
                     continue;
                 }
             };
             let mut file = match &cmd.redirect_path {
-                Some(path) => Some(File::create(path)?),
+                Some(path) => match File::create(path) {
+                    Ok(f) => Some(f),
+                    Err(err) => {
+                        report(&err.into(), &mut io::stdout(), &mut io::stderr())?;
+                        continue;
+                    }
+                },
                 None => None,
             };
             let mut stdout = io::stdout();
@@ -99,25 +103,23 @@ impl Shell {
                 Some(f) => f,
                 None => &mut stdout,
             };
-            let mut ctx = ExecutionContext {
-                shell: &mut self,
-                stdin: &mut io::stdin(),
+            let mut ctx = OutputStreams {
                 stdout: sink,
                 stderr: &mut io::stderr(),
             };
 
-            let handler = find_builtin(&cmd.name).unwrap_or(external_cmd as BuiltinFn);
-            let res = handler(&mut ctx, &cmd);
+            let res = self.execute_command(&mut ctx, cmd);
 
             if let Err(err) = res {
-                match err {
-                    ShellError::CommandNotFound(_) | ShellError::NotFound(_) => {
-                        writeln!(ctx.stdout, "{}", err).unwrap();
-                    }
-                    other => writeln!(ctx.stderr, "{}", other).unwrap(),
-                }
+                report(&err, ctx.stdout, ctx.stderr)?;
             }
         }
+    }
+
+    fn execute_command(&self, ctx: &mut OutputStreams, cmd: Command) -> Result<(), ShellError> {
+        let handler = find_builtin(&cmd.name).unwrap_or(external_cmd as BuiltinFn);
+
+        handler(ctx, self, &cmd)
     }
 
     fn try_find_executable(&self, name: &str) -> Option<PathBuf> {
@@ -134,242 +136,16 @@ impl Shell {
     }
 }
 
-struct Command {
-    name: String,
-    args: Vec<String>,
-    redirect_path: Option<PathBuf>,
-}
-
-impl Command {
-    fn parse(input: &str) -> Result<Self, ParseError> {
-        let mut argv = tokenize(input).into_iter();
-        let mut words: Vec<String> = Vec::new();
-        let mut redirect_path = None;
-        while let Some(token) = argv.next() {
-            match token {
-                Token::Word(w) => words.push(w),
-                Token::Redirect => {
-                    let Some(Token::Word(path)) = argv.next() else {
-                        return Err(ParseError::MissingRedirectTarget);
-                    };
-                    redirect_path = Some(PathBuf::from(path));
-                }
-            }
-        }
-
-        let name = words.first().unwrap();
-        let args = &words[1..];
-
-        Ok(Self {
-            name: name.to_string(),
-            args: args.to_vec(),
-            redirect_path,
-        })
-    }
-}
-
-#[derive(Debug)]
-enum ParseError {
-    MissingRedirectTarget,
-}
-
-impl From<ParseError> for ShellError {
-    fn from(value: ParseError) -> Self {
-        ShellError::Parse(value)
-    }
-}
-
-impl Display for ParseError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ParseError::MissingRedirectTarget => write!(f, "missing redirect target"),
-        }
-    }
-}
-
-#[derive(Copy, Clone, Eq, PartialEq)]
-enum Quote {
-    None,
-    Single,
-    Double,
-}
-
-#[derive(Copy, Clone, Eq, PartialEq)]
-enum Action {
-    Push(char),
-    Flush,
-    SetQuote(Quote),
-    StartEscape,
-    Consume(char),
-    Redirect,
-}
-
-enum Token {
-    Word(String),
-    Redirect,
-}
-
-fn step(quote: Quote, escaped: bool, c: char) -> Action {
-    if escaped {
-        return Action::Consume(c);
-    }
-    match quote {
-        Quote::None => match c {
-            '\\' => Action::StartEscape,
-            '\'' => Action::SetQuote(Quote::Single),
-            '\"' => Action::SetQuote(Quote::Double),
-            '>' => Action::Redirect,
-            c if c.is_whitespace() => Action::Flush,
-            _ => Action::Push(c),
-        },
-        Quote::Single => match c {
-            '\'' => Action::SetQuote(Quote::None),
-            _ => Action::Push(c),
-        },
-        Quote::Double => match c {
-            '\"' => Action::SetQuote(Quote::None),
-            '\\' => Action::StartEscape,
-            _ => Action::Push(c),
-        },
-    }
-}
-
-// "echo hi 1> out.txt"
-// "echo hi > out.txt"
-fn tokenize(input: &str) -> Vec<Token> {
-    let mut out_str = Vec::new();
-    let mut current_str = String::new();
-
-    let mut quote = Quote::None;
-    let mut escaped = false;
-
-    for c in input.chars() {
-        match step(quote, escaped, c) {
-            Action::Push(ch) => current_str.push(ch),
-            Action::Flush => {
-                if !current_str.is_empty() {
-                    out_str.push(Token::Word(std::mem::take(&mut current_str)));
-                }
-            }
-            Action::SetQuote(q) => quote = q,
-            Action::StartEscape => escaped = true,
-            Action::Consume(ch) => {
-                match quote {
-                    Quote::None => {
-                        current_str.push(ch);
-                    }
-                    Quote::Single => unreachable!("backslash does not escape inside single quotes"),
-                    Quote::Double => match ch {
-                        '"' | '\\' => current_str.push(ch),
-                        _ => {
-                            current_str.push('\\');
-                            current_str.push(ch);
-                        }
-                    },
-                }
-                escaped = false;
-            }
-            Action::Redirect => {
-                current_str.clear();
-                out_str.push(Token::Redirect);
-            }
-        }
-    }
-    if escaped {
-        current_str.push('\\');
-    }
-    if !current_str.is_empty() {
-        out_str.push(Token::Word(current_str));
-    }
-    out_str
-}
-
-fn exit_cmd(_ctx: &mut ExecutionContext<'_>, cmd: &Command) -> Result<(), ShellError> {
-    if !cmd.args.is_empty() {
-        return Err(ShellError::ShellMessage(
-            "exit: expected exactly zero arguments".to_string(),
-        ));
-    }
-    process::exit(0)
-}
-
-fn echo_cmd(ctx: &mut ExecutionContext<'_>, cmd: &Command) -> Result<(), ShellError> {
-    writeln!(ctx.stdout, "{}", cmd.args.join(" "))?;
-    Ok(())
-}
-
-fn type_cmd(ctx: &mut ExecutionContext<'_>, cmd: &Command) -> Result<(), ShellError> {
-    if cmd.args.len() != 1 {
-        return Err(ShellError::ShellMessage(
-            "type: expected exactly one argument".to_string(),
-        ));
-    }
-    let queried_program = cmd.args.first().unwrap();
-    if let Some(_builtin) = find_builtin(&queried_program) {
-        writeln!(ctx.stdout, "{} is a shell builtin", queried_program)?;
-        Ok(())
-    } else if let Some(executable_path) = ctx.shell.try_find_executable(queried_program) {
-        writeln!(
-            ctx.stdout,
-            "{} is {}",
-            queried_program,
-            executable_path.display()
-        )?;
-        Ok(())
-    } else {
-        Err(ShellError::NotFound(queried_program.to_string()))
-    }
-}
-
-fn pwd_cmd(ctx: &mut ExecutionContext<'_>, cmd: &Command) -> Result<(), ShellError> {
-    if !cmd.args.is_empty() {
-        return Err(ShellError::ShellMessage(
-            "pwd: expected exactly zero arguments".to_string(),
-        ));
-    }
-    let cwd = std::env::current_dir()?;
-    writeln!(ctx.stdout, "{}", cwd.display())?;
-    Ok(())
-}
-
-fn cd_cmd(_ctx: &mut ExecutionContext<'_>, cmd: &Command) -> Result<(), ShellError> {
-    if cmd.args.len() != 1 {
-        return Err(ShellError::ShellMessage(
-            "cd: expected exactly one argument".to_string(),
-        ));
-    }
-    let path_dir = &cmd.args[0];
-    let actual_path: PathBuf = if let Some(stripped_path) = path_dir.strip_prefix("~") {
-        let home_path = std::env::var("HOME").expect("home should not be empty");
-        PathBuf::from(home_path).join(stripped_path)
-    } else {
-        PathBuf::from(path_dir)
-    };
-    if std::env::set_current_dir(actual_path).is_err() {
-        return Err(ShellError::ShellMessage(format!(
-            "cd: {}: No such file or directory",
-            path_dir
-        )));
-    }
-    Ok(())
-}
-
-fn external_cmd(ctx: &mut ExecutionContext<'_>, cmd: &Command) -> Result<(), ShellError> {
-    match ctx.shell.try_find_executable(&cmd.name) {
-        Some(_) => {
-            let output = std::process::Command::new(cmd.name.clone())
-                .args(cmd.args.clone())
-                .output()?;
-            ctx.stdout.write_all(&output.stdout)?;
-            ctx.stderr.write_all(&output.stderr)?;
-            Ok(())
-        }
-        None => Err(ShellError::NotFound(cmd.name.clone())),
-    }
-}
-
 #[cfg(unix)]
 fn is_executable(metadata: &fs::Metadata) -> bool {
     use std::os::unix::fs::PermissionsExt;
     metadata.permissions().mode() & 0o111 != 0
+}
+
+fn report(err: &ShellError, stdout: &mut dyn Write, stderr: &mut dyn Write) -> io::Result<()> {
+    if err.is_stdout_err() {
+        writeln!(stdout, "{}", err)
+    } else {
+        writeln!(stderr, "{}", err)
+    }
 }
