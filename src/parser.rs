@@ -193,14 +193,17 @@ fn tokenize(input: &str) -> Vec<Token> {
             }
             Action::Redirect => {
                 let word = std::mem::take(&mut current_str);
+                let is_fd = !word.is_empty() && word.bytes().all(|b| b.is_ascii_digit());
                 let append = input_iter.next_if_eq(&'>').is_some();
-                match word.as_str() {
-                    "1" | "" => out_str.push(Token::Redirect { fd: 1, append }),
-                    "2" => out_str.push(Token::Redirect { fd: 2, append }),
-                    _ => {
+                if is_fd {
+                    let fd = word.parse::<u8>().unwrap_or(u8::MAX);
+                    out_str.push(Token::Redirect { fd, append });
+                } else {
+                    if !word.is_empty() {
                         out_str.push(Token::Word(word));
                     }
-                };
+                    out_str.push(Token::Redirect { fd: 1, append })
+                }
             }
         }
     }
@@ -224,7 +227,9 @@ mod tests {
         for (line, fd, append) in [
             ("echo a > f", 1, false),
             ("echo a 1> f", 1, false),
+            ("echo a> f", 1, false),
             ("echo a 2> f", 2, false),
+            ("echo a 3> f", 3, false),
             ("echo a >> f", 1, true),
             ("echo a 2>> f", 2, true),
         ] {
@@ -242,16 +247,36 @@ mod tests {
     }
 
     #[test]
-    fn unknown_redirect_prefix_skips_token() {
-        let line = "echo boom 3> f";
+    fn tokenizer_produces_fd_u8max_on_parse_failure() {
+        let line = "echo a 999> f";
         assert_eq!(
             tokenize(line),
             vec![
                 Word("echo".into()),
-                Word("boom".into()),
-                Word("3".into()),
+                Word("a".into()),
+                Redirect {
+                    fd: u8::MAX,
+                    append: false
+                },
                 Word("f".into())
-            ],
-        )
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_rejects_unsupported_fd() {
+        let input_line = "echo a 3> f";
+        assert!(matches!(
+            Command::parse(input_line),
+            Err(ParseError::UnsupportedRedirect)
+        ))
+    }
+    #[test]
+    fn parse_rejects_missing_redirect_path() {
+        let input_line = "echo a >";
+        assert!(matches!(
+            Command::parse(input_line),
+            Err(ParseError::MissingRedirectTarget)
+        ))
     }
 }
