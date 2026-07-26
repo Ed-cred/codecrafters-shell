@@ -1,12 +1,17 @@
-use std::{fmt::Display, fs::File, io, path::PathBuf};
+use std::{
+    fmt::Display,
+    fs::{File, OpenOptions},
+    io,
+    path::PathBuf,
+};
 
 use crate::ShellError;
 
 pub(crate) struct Command {
     pub(crate) name: String,
     pub(crate) args: Vec<String>,
-    pub(crate) stdout_path: Option<PathBuf>,
-    pub(crate) stderr_path: Option<PathBuf>,
+    pub(crate) stdout_path: Option<Target>,
+    pub(crate) stderr_path: Option<Target>,
 }
 
 impl Command {
@@ -18,13 +23,23 @@ impl Command {
         while let Some(token) = argv.next() {
             match token {
                 Token::Word(w) => words.push(w),
-                Token::Redirect(fd) => {
+                Token::Redirect { fd, append } => {
                     let Some(Token::Word(path)) = argv.next() else {
                         return Err(ParseError::MissingRedirectTarget);
                     };
                     match fd {
-                        1 => stdout_path = Some(PathBuf::from(path)),
-                        2 => stderr_path = Some(PathBuf::from(path)),
+                        1 => {
+                            stdout_path = Some(Target {
+                                path: PathBuf::from(path),
+                                append,
+                            })
+                        }
+                        2 => {
+                            stderr_path = Some(Target {
+                                path: PathBuf::from(path),
+                                append,
+                            })
+                        }
                         _ => return Err(ParseError::UnsupportedRedirect),
                     }
                 }
@@ -43,13 +58,28 @@ impl Command {
     }
 
     pub(crate) fn open_redirects(&self) -> io::Result<(Option<File>, Option<File>)> {
-        let stdout = self.stdout_path.as_deref().map(File::create).transpose()?;
-        let stderr = self.stderr_path.as_deref().map(File::create).transpose()?;
+        let stdout = self.stdout_path.as_ref().map(Target::open).transpose()?;
+        let stderr = self.stderr_path.as_ref().map(Target::open).transpose()?;
 
         Ok((stdout, stderr))
     }
 }
 
+pub(crate) struct Target {
+    path: PathBuf,
+    append: bool,
+}
+
+impl Target {
+    fn open(&self) -> io::Result<File> {
+        OpenOptions::new()
+            .write(true)
+            .create(true)
+            .append(self.append)
+            .truncate(!self.append)
+            .open(&self.path)
+    }
+}
 #[derive(Debug)]
 pub(crate) enum ParseError {
     MissingRedirectTarget,
@@ -97,7 +127,7 @@ enum Action {
 #[derive(Debug, PartialEq)]
 enum Token {
     Word(String),
-    Redirect(u8),
+    Redirect { fd: u8, append: bool },
 }
 
 fn step(quote: Quote, escaped: bool, c: char) -> Action {
@@ -134,7 +164,8 @@ fn tokenize(input: &str) -> Vec<Token> {
     let mut quote = Quote::None;
     let mut escaped = false;
 
-    for c in input.chars() {
+    let mut input_iter = input.chars().peekable();
+    while let Some(c) = input_iter.next() {
         match step(quote, escaped, c) {
             Action::Push(ch) => current_str.push(ch),
             Action::Flush => {
@@ -162,9 +193,10 @@ fn tokenize(input: &str) -> Vec<Token> {
             }
             Action::Redirect => {
                 let word = std::mem::take(&mut current_str);
+                let append = input_iter.next_if_eq(&'>').is_some();
                 match word.as_str() {
-                    "1" | "" => out_str.push(Token::Redirect(1)),
-                    "2" => out_str.push(Token::Redirect(2)),
+                    "1" | "" => out_str.push(Token::Redirect { fd: 1, append }),
+                    "2" => out_str.push(Token::Redirect { fd: 2, append }),
                     _ => {
                         out_str.push(Token::Word(word));
                     }
@@ -189,13 +221,19 @@ mod tests {
 
     #[test]
     fn redirect_operator_carries_its_fd() {
-        for (line, fd) in [("echo a > f", 1), ("echo a 1> f", 1), ("echo a 2> f", 2)] {
+        for (line, fd, append) in [
+            ("echo a > f", 1, false),
+            ("echo a 1> f", 1, false),
+            ("echo a 2> f", 2, false),
+            ("echo a >> f", 1, true),
+            ("echo a 2>> f", 2, true),
+        ] {
             assert_eq!(
                 tokenize(line),
                 vec![
                     Word("echo".into()),
                     Word("a".into()),
-                    Redirect(fd),
+                    Redirect { fd, append },
                     Word("f".into())
                 ],
                 "input: {line}",
