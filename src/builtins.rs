@@ -50,7 +50,7 @@ pub(crate) fn type_cmd(
         ));
     }
     let queried_program = cmd.args.first().unwrap();
-    if let Some(_builtin) = find_builtin(&queried_program) {
+    if let Some(_builtin) = find_builtin(queried_program) {
         writeln!(ctx.stdout, "{} is a shell builtin", queried_program)?;
         Ok(())
     } else if let Some(executable_path) = shell.try_find_executable(queried_program) {

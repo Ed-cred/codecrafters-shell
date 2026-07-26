@@ -88,24 +88,12 @@ impl Shell {
                     continue;
                 }
             };
-            let mut file = match &cmd.redirect_path {
-                Some(path) => match File::create(path) {
-                    Ok(f) => Some(f),
-                    Err(err) => {
-                        report(&err.into(), &mut io::stdout(), &mut io::stderr())?;
-                        continue;
-                    }
-                },
-                None => None,
-            };
-            let mut stdout = io::stdout();
-            let sink: &mut dyn Write = match file.as_mut() {
-                Some(f) => f,
-                None => &mut stdout,
-            };
+            let (mut stdout_file, mut stderr_file) = cmd.open_redirects()?;
+            let mut stdout_real = io::stdout();
+            let mut stderr_real = io::stderr();
             let mut ctx = OutputStreams {
-                stdout: sink,
-                stderr: &mut io::stderr(),
+                stdout: sink(stdout_file.as_mut(), &mut stdout_real),
+                stderr: sink(stderr_file.as_mut(), &mut stderr_real),
             };
 
             let res = self.execute_command(&mut ctx, cmd);
@@ -133,6 +121,13 @@ impl Shell {
             }
         }
         None
+    }
+}
+
+fn sink<'a>(f: Option<&'a mut File>, fallback: &'a mut dyn Write) -> &'a mut dyn Write {
+    match f {
+        Some(file) => file,
+        None => fallback,
     }
 }
 

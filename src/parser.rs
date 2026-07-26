@@ -1,26 +1,32 @@
-use std::{fmt::Display, path::PathBuf};
+use std::{fmt::Display, fs::File, io, path::PathBuf};
 
 use crate::ShellError;
 
 pub(crate) struct Command {
     pub(crate) name: String,
     pub(crate) args: Vec<String>,
-    pub(crate) redirect_path: Option<PathBuf>,
+    pub(crate) stdout_path: Option<PathBuf>,
+    pub(crate) stderr_path: Option<PathBuf>,
 }
 
 impl Command {
     pub(crate) fn parse(input: &str) -> Result<Self, ParseError> {
         let mut argv = tokenize(input).into_iter();
         let mut words: Vec<String> = Vec::new();
-        let mut redirect_path = None;
+        let mut stdout_path = None;
+        let mut stderr_path = None;
         while let Some(token) = argv.next() {
             match token {
                 Token::Word(w) => words.push(w),
-                Token::Redirect => {
+                Token::Redirect(fd) => {
                     let Some(Token::Word(path)) = argv.next() else {
                         return Err(ParseError::MissingRedirectTarget);
                     };
-                    redirect_path = Some(PathBuf::from(path));
+                    match fd {
+                        1 => stdout_path = Some(PathBuf::from(path)),
+                        2 => stderr_path = Some(PathBuf::from(path)),
+                        _ => return Err(ParseError::UnsupportedRedirect),
+                    }
                 }
             }
         }
@@ -31,14 +37,23 @@ impl Command {
         Ok(Self {
             name: name.to_string(),
             args: args.to_vec(),
-            redirect_path,
+            stdout_path,
+            stderr_path,
         })
+    }
+
+    pub(crate) fn open_redirects(&self) -> io::Result<(Option<File>, Option<File>)> {
+        let stdout = self.stdout_path.as_deref().map(File::create).transpose()?;
+        let stderr = self.stderr_path.as_deref().map(File::create).transpose()?;
+
+        Ok((stdout, stderr))
     }
 }
 
 #[derive(Debug)]
 pub(crate) enum ParseError {
     MissingRedirectTarget,
+    UnsupportedRedirect,
     MalformedInput,
 }
 
@@ -54,6 +69,9 @@ impl Display for ParseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ParseError::MissingRedirectTarget => write!(f, "missing redirect target"),
+            ParseError::UnsupportedRedirect => {
+                write!(f, "unsupported redirect target")
+            }
             ParseError::MalformedInput => write!(f, "malformed command input"),
         }
     }
@@ -76,9 +94,10 @@ enum Action {
     Redirect,
 }
 
+#[derive(Debug, PartialEq)]
 enum Token {
     Word(String),
-    Redirect,
+    Redirect(u8),
 }
 
 fn step(quote: Quote, escaped: bool, c: char) -> Action {
@@ -109,7 +128,7 @@ fn step(quote: Quote, escaped: bool, c: char) -> Action {
 // "echo hi 1> out.txt"
 // "echo hi > out.txt"
 fn tokenize(input: &str) -> Vec<Token> {
-    let mut out_str = Vec::new();
+    let mut out_str: Vec<Token> = Vec::new();
     let mut current_str = String::new();
 
     let mut quote = Quote::None;
@@ -142,8 +161,14 @@ fn tokenize(input: &str) -> Vec<Token> {
                 escaped = false;
             }
             Action::Redirect => {
-                current_str.clear();
-                out_str.push(Token::Redirect);
+                let word = std::mem::take(&mut current_str);
+                match word.as_str() {
+                    "1" | "" => out_str.push(Token::Redirect(1)),
+                    "2" => out_str.push(Token::Redirect(2)),
+                    _ => {
+                        out_str.push(Token::Word(word));
+                    }
+                };
             }
         }
     }
@@ -154,4 +179,41 @@ fn tokenize(input: &str) -> Vec<Token> {
         out_str.push(Token::Word(current_str));
     }
     out_str
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::parser::Token::{Redirect, Word};
+
+    use super::*;
+
+    #[test]
+    fn redirect_operator_carries_its_fd() {
+        for (line, fd) in [("echo a > f", 1), ("echo a 1> f", 1), ("echo a 2> f", 2)] {
+            assert_eq!(
+                tokenize(line),
+                vec![
+                    Word("echo".into()),
+                    Word("a".into()),
+                    Redirect(fd),
+                    Word("f".into())
+                ],
+                "input: {line}",
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_redirect_prefix_skips_token() {
+        let line = "echo boom 3> f";
+        assert_eq!(
+            tokenize(line),
+            vec![
+                Word("echo".into()),
+                Word("boom".into()),
+                Word("3".into()),
+                Word("f".into())
+            ],
+        )
+    }
 }
